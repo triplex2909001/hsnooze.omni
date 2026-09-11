@@ -7,6 +7,14 @@ on:
         description: "Idea ID from Pipeline Sheet (e.g. id_w3vc3j)"
         required: true
         default: "id_w3vc3j"
+      script_file_id:
+        description: "Google Drive File ID for combined_voiceover.txt"
+        required: true
+        default: "1wrcmW13YLqEwBXHA5Amd3gEjA-fbPVV1"
+      voice_ref_id:
+        description: "Google Drive File ID for reference voice (e.g. Milo)"
+        required: true
+        default: "1VC_eN0rnm9l2d4ilogn9B2GqWzzaV4fS"
       project_folder_id:
         description: "Google Drive Folder ID for the project"
         required: true
@@ -42,7 +50,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-          pip install omnivoice soundfile numpy scipy
+          pip install omnivoice soundfile numpy scipy requests
 
       - name: Pre-download k2-fsa/OmniVoice Model Weights
         run: |
@@ -86,11 +94,20 @@ jobs:
       - name: Fast Install Cached Dependencies
         run: |
           pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-          pip install omnivoice soundfile numpy scipy
+          pip install omnivoice soundfile numpy scipy requests
+
+      - name: Fetch Dynamic Script & Reference Voice from Google Drive
+        run: |
+          mkdir -p ./mainvoice
+          mkdir -p ./audio_out
+          # Tải kịch bản từ Google Drive (không lưu cố định trong repo)
+          curl -sL "https://drive.google.com/uc?export=download&id=${{ inputs.script_file_id }}" -o ./combined_voiceover.txt
+          # Tải voice mẫu từ Google Drive
+          curl -sL "https://drive.google.com/uc?export=download&id=${{ inputs.voice_ref_id }}" -o ./mainvoice/voice_preview_milo.mp3
+          echo "Assets fetched from Google Drive successfully!"
 
       - name: Run OmniVoice Synthesis with Milo Voice (Smart Delta Restart)
         run: |
-          mkdir -p ./audio_out
           python3 voice_matrix_worker.py \
             --part ${{ matrix.part }} \
             --script ./combined_voiceover.txt \

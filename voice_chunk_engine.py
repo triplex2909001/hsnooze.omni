@@ -1,14 +1,15 @@
 """
-HISTORYSNOOZE: VOICE CHUNK ENGINE & SMART DELTA RESTORATION
+HISTORYSNOOZE: VOICE CHUNK ENGINE & MASTER ASSEMBLY
 Module: voice_chunk_engine.py
-Version: 1.3.0
+Version: 1.4.0
 Purpose:
   - Official integration of k2-fsa/OmniVoice zero-shot TTS model (https://github.com/k2-fsa/OmniVoice).
   - Sentence-level chunk splitting (15-30 words) for fail-safe TTS synthesis.
+  - Zero-shot Voice Cloning from reference audio Milo (without invalid instruct strings).
   - Immediate file persistence per chunk (no data lost mid-stream).
-  - Smart Delta Restart at chunk & part levels (skip existing valid files).
-  - Multi-tier silence insertion (1.0s intra-paragraph, 2.0s inter-paragraph).
+  - Multi-tier silence insertion (1.0s intra-paragraph, 2.0s inter-paragraph, 5.0s inter-part).
   - Gatekeeper 4 (GK4) acoustic auditing: STRICT min_size >= 10 KB, RMS >= 0.003, Peak >= 0.02.
+  - Master Concatenation: Stitches all 15 parts into 1 complete Master Documentary WAV file.
 """
 
 import os
@@ -173,6 +174,39 @@ def stitch_wav_chunks(chunk_paths: List[str], output_part_path: str, intra_silen
                 out_wf.writeframes(intra_silence_data)
 
 
+def stitch_master_audio(part_wav_paths: List[str], output_master_path: str, inter_part_silence_sec: float = 5.0) -> str:
+    """
+    Concatenates all 15 Part WAV files into a single master audio documentary.
+    Inserts exact 5.0-second meditative silence between parts.
+    """
+    if not part_wav_paths:
+        raise ValueError("No part WAV paths provided for master assembly.")
+    
+    print(f"Assembling Master Audio from {len(part_wav_paths)} parts into {output_master_path}...")
+    with wave.open(part_wav_paths[0], 'rb') as first_wf:
+        channels = first_wf.getnchannels()
+        sampwidth = first_wf.getsampwidth()
+        framerate = first_wf.getframerate()
+        
+    inter_part_silence_data = b'\x00' * (int(framerate * inter_part_silence_sec) * channels * sampwidth)
+    
+    with wave.open(output_master_path, 'wb') as out_wf:
+        out_wf.setnchannels(channels)
+        out_wf.setsampwidth(sampwidth)
+        out_wf.setframerate(framerate)
+        
+        for i, p_path in enumerate(part_wav_paths):
+            with wave.open(p_path, 'rb') as wf:
+                data = wf.readframes(wf.getnframes())
+                out_wf.writeframes(data)
+            
+            if i < len(part_wav_paths) - 1:
+                out_wf.writeframes(inter_part_silence_data)
+                
+    print(f"Master Audio assembly complete: {output_master_path} ({os.path.getsize(output_master_path)/(1024*1024):.2f} MB)")
+    return output_master_path
+
+
 class OmniVoiceBackend:
     """
     Official backend integrating k2-fsa/OmniVoice zero-shot TTS model.
@@ -210,9 +244,10 @@ class OmniVoiceBackend:
         self.sampling_rate = getattr(self.model, "sampling_rate", 24000)
         print(f"[OmniVoice] Model loaded successfully! Native Sampling Rate: {self.sampling_rate} Hz")
 
-    def synthesize(self, text: str, output_path: str, voice_ref: Optional[str] = None, instruct: str = "calm, soothing, meditative, slow pacing"):
+    def synthesize(self, text: str, output_path: str, voice_ref: Optional[str] = None, instruct: Optional[str] = None):
         """
-        Synthesizes speech using k2-fsa/OmniVoice with optional reference voice cloning.
+        Synthesizes speech using k2-fsa/OmniVoice zero-shot voice cloning.
+        Note: When voice_ref is provided, instruct must be None or follow strict OmniVoice vocab.
         """
         import soundfile as sf
         import torch
@@ -304,9 +339,9 @@ class ChunkVoiceoverPipeline:
                     print(f"  [DELTA REBUILD] Corrupt/silent chunk {item['filename']}: {msg}")
                     c_path.unlink(missing_ok=True)
             
-            # Synthesize chunk via k2-fsa/OmniVoice
+            # Synthesize chunk via k2-fsa/OmniVoice (instruct=None so it clones ref_audio purely)
             print(f"  [OMNIVOICE SYNTHESIS] {item['filename']} ({len(c_text.split())} words): '{c_text[:40]}...'")
-            self.tts_backend.synthesize(text=c_text, output_path=str(c_path), voice_ref=voice_ref)
+            self.tts_backend.synthesize(text=c_text, output_path=str(c_path), voice_ref=voice_ref, instruct=None)
                 
             # Verify newly synthesized chunk with STRICT acoustic gate
             is_valid, msg = audit_wav_acoustic(str(c_path), min_size_kb=1, min_rms=0.003, min_peak=0.02)

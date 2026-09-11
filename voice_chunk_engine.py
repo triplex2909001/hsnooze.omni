@@ -1,13 +1,14 @@
 """
 HISTORYSNOOZE: VOICE CHUNK ENGINE & SMART DELTA RESTORATION
 Module: voice_chunk_engine.py
-Version: 1.2.0
+Version: 1.3.0
 Purpose:
-  - Sentence-level chunk splitting (15-30 words) for robust, fail-safe TTS synthesis.
+  - Official integration of k2-fsa/OmniVoice zero-shot TTS model (https://github.com/k2-fsa/OmniVoice).
+  - Sentence-level chunk splitting (15-30 words) for fail-safe TTS synthesis.
   - Immediate file persistence per chunk (no data lost mid-stream).
   - Smart Delta Restart at chunk & part levels (skip existing valid files).
   - Multi-tier silence insertion (1.0s intra-paragraph, 2.0s inter-paragraph).
-  - Gatekeeper 4 (GK4) acoustic auditing (size >= 10 KB, RMS >= 0.003).
+  - Gatekeeper 4 (GK4) acoustic auditing: STRICT min_size >= 10 KB, RMS >= 0.003, Peak >= 0.02.
 """
 
 import os
@@ -20,56 +21,9 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 
 
-import re
-
-
-def clean_voiceover_script(text: str) -> str:
-    """
-    Gatekeeper Anti-Heading & Metadata Sanitizer for Voiceover TTS.
-    Strips out all headings (Markdown #, ACT, PART, BEAT), Google Doc anchor IDs (h.xxx),
-    technical bracket notes [SFX...], and word counts to prevent TTS from reading them aloud.
-    """
-    lines = text.splitlines()
-    cleaned_lines = []
-    
-    skip_line_patterns = [
-        r'^\s*#{1,6}\s+.*$',                               # Markdown headers: # Heading, ## Part 01
-        r'^\s*(?:ACT|Act)\s+[IVXLCDM0-9]+.*$',             # ACT I: ..., Act 1
-        r'^\s*(?:PART|Part)\s+[0-9]+.*$',                  # Part 01: ..., Part 1
-        r'^\s*(?:BEAT|Beat)\s+[0-9]+.*$',                  # Beat 01: ...
-        r'^\s*(?:SCENE|Scene)\s+[0-9]+.*$',                # Scene 01: ...
-        r'^\s*Word\s+[Cc]ount\s*[:=].*$',                  # Word count: 1100
-        r'^\s*\[.*\]\s*$',                                 # Standalone [Bracket notes]
-        r'^\s*\(.*Hook.*\)\s*$',                           # Standalone (Host Hook)
-        r'^\s*h\.[a-z0-9]+\s*$',                           # GDoc heading anchor IDs (e.g. h.ipicnrszs37x)
-        r'^\s*---\s*$',                                    # Horizontal rules
-    ]
-    compiled_skips = [re.compile(p, re.IGNORECASE) for p in skip_line_patterns]
-    
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            cleaned_lines.append('')
-            continue
-        
-        if any(p.match(stripped) for p in compiled_skips):
-            continue
-            
-        # Inline cleaning: remove technical brackets like [Music: ambient drone 80s]
-        cleaned_line = re.sub(r'\[(?:Music|SFX|Audio|Sound|Visual|Beat|Note|Scene)[^\]]*\]', '', line, flags=re.IGNORECASE)
-        # Remove standalone anchor tags if any
-        cleaned_line = re.sub(r'h\.[a-z0-9]{10,}', '', cleaned_line)
-        
-        if cleaned_line.strip():
-            cleaned_lines.append(cleaned_line.strip())
-            
-    result = "\n\n".join([p for p in "\n".join(cleaned_lines).split("\n\n") if p.strip()])
-    return result
-
 def split_into_paragraphs(text: str) -> List[str]:
     """Splits raw script text into paragraphs by double newlines."""
-    cleaned = clean_voiceover_script(text)
-    paragraphs = [p.strip() for p in cleaned.split("\n\n") if p.strip()]
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     return paragraphs
 
 
@@ -79,10 +33,7 @@ def split_paragraph_into_sentences(paragraph: str, max_words: int = 35) -> List[
     Respects ellipses (...), periods, question marks, and exclamation points.
     If a sentence is too long, splits on natural pause markers (commas, semicolons).
     """
-    # Replace ellipses temporarily to avoid false splits
     text = paragraph.replace("...", " <ELLIPSIS> ")
-    
-    # Split on sentence terminals
     raw_sentences = re.split(r'(?<=[.?!])\s+', text)
     
     sentences = []
@@ -95,7 +46,6 @@ def split_paragraph_into_sentences(paragraph: str, max_words: int = 35) -> List[
         if len(words) <= max_words:
             sentences.append(s)
         else:
-            # Subdivide long sentence by commas or semicolons
             sub_clauses = re.split(r'(?<=[,;])\s+', s)
             current_clause = []
             for clause in sub_clauses:
@@ -105,35 +55,59 @@ def split_paragraph_into_sentences(paragraph: str, max_words: int = 35) -> List[
                     current_clause = []
             if current_clause:
                 if sentences:
-                    # Append remaining small tail to last sentence or as new
-                    if len(" ".join(current_clause).split()) < 8:
-                        sentences[-1] = sentences[-1] + " " + " ".join(current_clause)
-                    else:
-                        sentences.append(" ".join(current_clause).strip())
+                    sentences.append(" ".join(current_clause).strip())
                 else:
                     sentences.append(" ".join(current_clause).strip())
                     
-    return [s for s in sentences if s.strip()]
+    return sentences
 
 
-def audit_wav_acoustic(wav_path: str, min_size_kb: int = 10, min_rms: float = 0.003) -> Tuple[bool, str]:
+def clean_voiceover_script(raw_script: str) -> str:
     """
-    Gatekeeper 4 Acoustic Auditor.
-    Verifies that the WAV file is valid, has size >= min_size_kb, and RMS energy >= min_rms.
+    Sanitizes raw script text to guarantee zero headings, markdown formatting,
+    or structural notes leak into the voiceover audio.
     """
-    path = Path(wav_path)
-    if not path.exists():
-        return False, "File does not exist"
-    
-    size_kb = path.stat().st_size / 1024.0
+    lines = raw_script.split("\n")
+    cleaned_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if re.match(r"^ACT\s+[I|V|X\d]+", stripped, re.IGNORECASE):
+            continue
+        if re.match(r"^Part\s+\d+", stripped, re.IGNORECASE):
+            continue
+        if re.match(r"^h\.[a-z0-9]+", stripped):
+            continue
+        if re.match(r"^\(Words?:?\s*\d+\)", stripped, re.IGNORECASE):
+            continue
+        if stripped.startswith("[") and stripped.endswith("]"):
+            continue
+        line_clean = re.sub(r"\[.*?\]", "", line)
+        line_clean = re.sub(r"^[\*\-\_]{3,}\s*$", "", line_clean)
+        line_clean = re.sub(r"[\*\_\#]", "", line_clean)
+        cleaned_lines.append(line_clean)
+    return "\n".join(cleaned_lines).strip()
+
+
+def audit_wav_acoustic(wav_path: str, min_size_kb: float = 10.0, min_rms: float = 0.003, min_peak: float = 0.02) -> Tuple[bool, str]:
+    """
+    Performs Gatekeeper 4 (GK4) acoustic auditing on a WAV file.
+    STRICT: Rejects silent audio (RMS < 0.003 or Peak < 0.02).
+    """
+    if not os.path.exists(wav_path):
+        return False, f"File does not exist: {wav_path}"
+        
+    size_bytes = os.path.getsize(wav_path)
+    size_kb = size_bytes / 1024.0
     if size_kb < min_size_kb:
-        return False, f"File size too small: {size_kb:.1f} KB < {min_size_kb} KB"
-    
+        return False, f"File size too small: {size_kb:.1f} KB < {min_size_kb:.1f} KB"
+        
     try:
-        with wave.open(str(path), 'rb') as wf:
-            n_channels = wf.getnchannels()
-            sampwidth = wf.getsampwidth()
+        with wave.open(wav_path, 'rb') as wf:
             framerate = wf.getframerate()
+            sampwidth = wf.getsampwidth()
+            n_channels = wf.getnchannels()
             n_frames = wf.getnframes()
             
             if n_frames == 0:
@@ -141,19 +115,20 @@ def audit_wav_acoustic(wav_path: str, min_size_kb: int = 10, min_rms: float = 0.
             
             raw_bytes = wf.readframes(n_frames)
             
-            # Unpack 16-bit PCM
             if sampwidth == 2:
                 fmt = f"<{n_frames * n_channels}h"
                 samples = struct.unpack(fmt, raw_bytes)
-                # Calculate RMS
                 sum_sq = sum(float(s) * float(s) for s in samples)
                 rms = math.sqrt(sum_sq / len(samples)) / 32768.0
+                peak = max(abs(s) for s in samples) / 32768.0
                 
                 if rms < min_rms:
-                    return False, f"Acoustic RMS too low: {rms:.5f} < {min_rms:.5f} (Silent/Corrupt)"
+                    return False, f"Acoustic RMS too low: {rms:.5f} < {min_rms:.5f} (SILENT / CORRUPT)"
+                if peak < min_peak:
+                    return False, f"Acoustic Peak too low: {peak:.5f} < {min_peak:.5f} (FLAT / SILENT)"
                 
                 duration_sec = n_frames / framerate
-                return True, f"Valid WAV ({duration_sec:.1f}s, {size_kb:.1f}KB, RMS={rms:.4f})"
+                return True, f"Valid WAV ({duration_sec:.1f}s, {size_kb:.1f}KB, RMS={rms:.4f}, Peak={peak:.4f})"
             else:
                 return True, f"Valid WAV non-16bit ({size_kb:.1f}KB)"
     except Exception as e:
@@ -161,34 +136,28 @@ def audit_wav_acoustic(wav_path: str, min_size_kb: int = 10, min_rms: float = 0.
 
 
 def generate_silence_wav(output_path: str, duration_sec: float, framerate: int = 24000, n_channels: int = 1):
-    """Generates an uncompressed PCM silence WAV file of exact duration."""
+    """Generates an uncompressed PCM silence WAV file for spacing padding."""
     n_frames = int(framerate * duration_sec)
     raw_silence = b'\x00\x00' * (n_frames * n_channels)
     
     with wave.open(output_path, 'wb') as wf:
         wf.setnchannels(n_channels)
-        wf.setsampwidth(2) # 16-bit
+        wf.setsampwidth(2)
         wf.setframerate(framerate)
         wf.writeframes(raw_silence)
 
 
 def stitch_wav_chunks(chunk_paths: List[str], output_part_path: str, intra_silence_sec: float = 1.0, inter_silence_sec: float = 2.0):
-    """
-    Stitches audio chunks into a complete Part WAV with multi-tier silence pacing.
-    - intra_silence_sec: inserted between sentences.
-    - inter_silence_sec: inserted between paragraphs.
-    """
+    """Stitches audio chunks into a complete Part WAV with multi-tier silence pacing."""
     if not chunk_paths:
         raise ValueError("No chunk paths provided to stitch.")
     
-    # Read first chunk to match audio parameters
     with wave.open(chunk_paths[0], 'rb') as first_wf:
         channels = first_wf.getnchannels()
         sampwidth = first_wf.getsampwidth()
         framerate = first_wf.getframerate()
-    
-    intra_silence_frames = int(framerate * intra_silence_sec)
-    intra_silence_data = b'\x00' * (intra_silence_frames * channels * sampwidth)
+        
+    intra_silence_data = b'\x00' * (int(framerate * intra_silence_sec) * channels * sampwidth)
     
     with wave.open(output_part_path, 'wb') as out_wf:
         out_wf.setnchannels(channels)
@@ -200,17 +169,84 @@ def stitch_wav_chunks(chunk_paths: List[str], output_part_path: str, intra_silen
                 data = wf.readframes(wf.getnframes())
                 out_wf.writeframes(data)
             
-            # Add intra-sentence silence if not the last chunk
             if i < len(chunk_paths) - 1:
                 out_wf.writeframes(intra_silence_data)
+
+
+class OmniVoiceBackend:
+    """
+    Official backend integrating k2-fsa/OmniVoice zero-shot TTS model.
+    GitHub: https://github.com/k2-fsa/OmniVoice
+    HuggingFace: https://huggingface.co/k2-fsa/OmniVoice
+    Output: 24,000 Hz, 16-bit PCM WAV.
+    """
+    def __init__(self, device: Optional[str] = None, model_id: str = "k2-fsa/OmniVoice"):
+        self.device = device
+        self.model_id = model_id
+        self.model = None
+        self.sampling_rate = 24000
+        self._load_model()
+
+    def _load_model(self):
+        import torch
+        import soundfile as sf
+        from omnivoice import OmniVoice
+
+        if self.device is None:
+            if torch.cuda.is_available():
+                self.device = "cuda:0"
+                self.dtype = torch.float16
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                self.device = "mps"
+                self.dtype = torch.float32
+            else:
+                self.device = "cpu"
+                self.dtype = torch.float32
+        else:
+            self.dtype = torch.float16 if "cuda" in self.device else torch.float32
+
+        print(f"[OmniVoice] Loading {self.model_id} on {self.device} ({self.dtype})...")
+        self.model = OmniVoice.from_pretrained(self.model_id, device_map=self.device, dtype=self.dtype)
+        self.sampling_rate = getattr(self.model, "sampling_rate", 24000)
+        print(f"[OmniVoice] Model loaded successfully! Native Sampling Rate: {self.sampling_rate} Hz")
+
+    def synthesize(self, text: str, output_path: str, voice_ref: Optional[str] = None, instruct: str = "calm, soothing, meditative, slow pacing"):
+        """
+        Synthesizes speech using k2-fsa/OmniVoice with optional reference voice cloning.
+        """
+        import soundfile as sf
+        import torch
+
+        kwargs = {
+            "text": text,
+            "language": "en"
+        }
+        if voice_ref and os.path.exists(voice_ref):
+            kwargs["ref_audio"] = voice_ref
+        if instruct:
+            kwargs["instruct"] = instruct
+
+        audio = self.model.generate(**kwargs)
+
+        if isinstance(audio, torch.Tensor):
+            audio_np = audio.squeeze().cpu().float().numpy()
+        elif isinstance(audio, (list, tuple)):
+            first = audio[0]
+            audio_np = first.squeeze().cpu().float().numpy() if isinstance(first, torch.Tensor) else first
+        else:
+            audio_np = audio
+
+        sf.write(output_path, audio_np, self.sampling_rate)
 
 
 class ChunkVoiceoverPipeline:
     """
     Orchestrates chunk-level voiceover generation with Smart Delta Restart.
-    Works natively on Google Colab (with local mounted drive) or on GitHub Actions.
+    Enforces k2-fsa/OmniVoice and strict Gatekeeper GK4 acoustic auditing.
     """
     def __init__(self, tts_backend=None, output_dir: str = "./audio_output"):
+        if tts_backend is None:
+            raise ValueError("[GK4 SECURITY VIOLATION] tts_backend cannot be None! A real k2-fsa/OmniVoice backend is required.")
         self.tts_backend = tts_backend
         self.output_dir = Path(output_dir)
         self.chunks_dir = self.output_dir / "chunks_raw"
@@ -220,20 +256,16 @@ class ChunkVoiceoverPipeline:
         self.parts_dir.mkdir(parents=True, exist_ok=True)
         
     def process_part(self, part_num: int, part_text: str, voice_ref: Optional[str] = None) -> str:
-        """
-        Processes a single part into chunk WAVs, uploads/saves immediately, and stitches.
-        Returns the path to the stitched Part_{XX}.wav.
-        """
         final_part_path = self.parts_dir / f"Part_{part_num:02d}.wav"
         
-        # 1. Check if final part already exists and is valid (Smart Delta Top-Level)
+        # 1. Smart Delta Top-Level Check
         if final_part_path.exists():
-            is_valid, msg = audit_wav_acoustic(str(final_part_path), min_size_kb=50)
+            is_valid, msg = audit_wav_acoustic(str(final_part_path), min_size_kb=50, min_rms=0.003, min_peak=0.02)
             if is_valid:
                 print(f"[SMART DELTA SKIP] Part_{part_num:02d}.wav already complete & valid: {msg}")
                 return str(final_part_path)
             else:
-                print(f"[REDO] Part_{part_num:02d}.wav exists but failed audit: {msg}. Re-synthesizing...")
+                print(f"[REDO] Part_{part_num:02d}.wav failed GK4 audit: {msg}. Re-synthesizing...")
         
         # 2. Split part into sentence chunks
         paragraphs = split_into_paragraphs(part_text)
@@ -256,7 +288,7 @@ class ChunkVoiceoverPipeline:
                 
         print(f"Part {part_num:02d}: Split into {len(all_chunks_info)} sentence chunks.")
         
-        # 3. Generate each chunk with immediate persistence & Smart Delta
+        # 3. Generate each chunk with Smart Delta
         valid_chunk_paths = []
         for item in all_chunks_info:
             c_path = item["path"]
@@ -264,28 +296,22 @@ class ChunkVoiceoverPipeline:
             
             # Check existing chunk
             if c_path.exists():
-                is_valid, msg = audit_wav_acoustic(str(c_path), min_size_kb=5, min_rms=0.002)
+                is_valid, msg = audit_wav_acoustic(str(c_path), min_size_kb=5, min_rms=0.003, min_peak=0.02)
                 if is_valid:
-                    # Smart Delta: Skip generation
                     valid_chunk_paths.append(str(c_path))
                     continue
                 else:
-                    print(f"  [DELTA REBUILD] Corrupt chunk {item['filename']}: {msg}")
+                    print(f"  [DELTA REBUILD] Corrupt/silent chunk {item['filename']}: {msg}")
                     c_path.unlink(missing_ok=True)
             
-            # Synthesize missing chunk
-            print(f"  [SYNTHESIZING] {item['filename']} ({len(c_text.split())} words): '{c_text[:40]}...'")
-            if self.tts_backend:
-                self.tts_backend.synthesize(text=c_text, output_path=str(c_path), voice_ref=voice_ref)
-            else:
-                # Mock synthesis for testing/validation pipeline
-                word_dur = max(0.2, len(c_text.split()) * 0.35)
-                generate_silence_wav(str(c_path), duration_sec=word_dur)
+            # Synthesize chunk via k2-fsa/OmniVoice
+            print(f"  [OMNIVOICE SYNTHESIS] {item['filename']} ({len(c_text.split())} words): '{c_text[:40]}...'")
+            self.tts_backend.synthesize(text=c_text, output_path=str(c_path), voice_ref=voice_ref)
                 
-            # Verify newly synthesized chunk
-            is_valid, msg = audit_wav_acoustic(str(c_path), min_size_kb=1, min_rms=0.0)
+            # Verify newly synthesized chunk with STRICT acoustic gate
+            is_valid, msg = audit_wav_acoustic(str(c_path), min_size_kb=1, min_rms=0.003, min_peak=0.02)
             if not is_valid:
-                raise RuntimeError(f"Failed GK4 audit for newly synthesized chunk {item['filename']}: {msg}")
+                raise RuntimeError(f"Failed GK4 audit for synthesized chunk {item['filename']}: {msg}")
             
             valid_chunk_paths.append(str(c_path))
             
@@ -294,9 +320,9 @@ class ChunkVoiceoverPipeline:
         stitch_wav_chunks(valid_chunk_paths, str(final_part_path), intra_silence_sec=1.0, inter_silence_sec=2.0)
         
         # 5. Final GK4 audit on the stitched part
-        is_valid, msg = audit_wav_acoustic(str(final_part_path), min_size_kb=10, min_rms=0.0)
+        is_valid, msg = audit_wav_acoustic(str(final_part_path), min_size_kb=10, min_rms=0.003, min_peak=0.02)
         if not is_valid:
-            raise RuntimeError(f"Stitched Part_{part_num:02d}.wav failed GK4 audit: {msg}")
+            raise RuntimeError(f"Stitched Part_{part_num:02d}.wav failed GK4 acoustic audit: {msg}")
             
-        print(f"[COMPLETED] Part_{part_num:02d}.wav verified: {msg}")
+        print(f"[COMPLETED] Part_{part_num:02d}.wav verified GK4: {msg}")
         return str(final_part_path)

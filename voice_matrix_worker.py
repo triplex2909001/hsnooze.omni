@@ -1,35 +1,31 @@
 """
 HISTORYSNOOZE: GITHUB ACTIONS MATRIX WORKER
 Module: voice_matrix_worker.py
-Version: 1.2.0
+Version: 1.3.0
 Purpose:
+  - Official runner using k2-fsa/OmniVoice zero-shot TTS engine.
   - Executed by GitHub Actions matrix job for a single part (e.g. part 1, 2, ... 15).
   - Divides part into sentence chunks (15-30 words).
-  - Checks Google Drive for existing valid chunks (Smart Delta Restart).
-  - Synthesizes missing chunks and immediately uploads each chunk to Google Drive.
-  - Stitches chunks into Part_{XX}.wav, uploads to Drive, and validates GK4.
+  - Synthesizes each chunk with reference voice Milo (mainvoice/voice_preview_milo.mp3).
+  - Stitches chunks into Part_{XX}.wav and validates STRICT GK4 acoustic criteria.
 """
 
 import os
 import sys
 import argparse
-import tempfile
 from pathlib import Path
 
 from voice_chunk_engine import (
     ChunkVoiceoverPipeline,
-    split_into_paragraphs,
-    split_paragraph_into_sentences,
-    audit_wav_acoustic,
-    stitch_wav_chunks,
-    generate_silence_wav
+    OmniVoiceBackend,
+    clean_voiceover_script
 )
 
 
 def run_matrix_worker(part_num: int, script_path: str, output_dir: str, voice_ref: str = None):
-    """Runs synthesis for a single part inside a GitHub Actions runner."""
     print(f"==================================================")
     print(f"GITHUB ACTIONS MATRIX WORKER - PART {part_num:02d}")
+    print(f"Engine: k2-fsa/OmniVoice (Zero-Shot Voice Cloning)")
     print(f"==================================================")
     
     script_p = Path(script_path)
@@ -39,29 +35,31 @@ def run_matrix_worker(part_num: int, script_path: str, output_dir: str, voice_re
     with open(script_p, "r", encoding="utf-8") as f:
         full_text = f.read()
         
-    # Split into parts
-    raw_parts = [p.strip() for p in full_text.split("\n\n=== PART BREAK ===\n\n") if p.strip()]
-    if len(raw_parts) < 15:
+    # Split into 15 parts cleanly using delimiter
+    if "=== PART BREAK ===" in full_text:
+        raw_parts = [p.strip() for p in full_text.split("=== PART BREAK ===") if p.strip()]
+    else:
         raw_parts = [p.strip() for p in full_text.split("\n\n\n") if p.strip()]
-    if len(raw_parts) < 15:
-        raw_parts = [p.strip() for p in full_text.split("## Part") if p.strip()]
         
     part_idx = part_num - 1
     if part_idx >= len(raw_parts):
         raise IndexError(f"Part {part_num} out of range in script (found {len(raw_parts)} parts).")
         
-    part_text = raw_parts[part_idx]
+    part_text = clean_voiceover_script(raw_parts[part_idx])
+    
+    # Initialize real k2-fsa/OmniVoice backend (CPU on GitHub Actions, GPU on Colab)
+    device = "cuda:0" if ("CUDA_VISIBLE_DEVICES" in os.environ or os.environ.get("USE_GPU") == "1") else "cpu"
+    tts_backend = OmniVoiceBackend(device=device)
     
     # Initialize pipeline
-    pipeline = ChunkVoiceoverPipeline(tts_backend=None, output_dir=output_dir)
+    pipeline = ChunkVoiceoverPipeline(tts_backend=tts_backend, output_dir=output_dir)
     part_wav = pipeline.process_part(part_num=part_num, part_text=part_text, voice_ref=voice_ref)
     
-    print(f"\nWorker Part {part_num:02d} completed successfully: {part_wav}")
-    # In GitHub Actions, subsequent step calls Google Drive API / rclone / gdrive to sync part_wav and chunks
+    print(f"\nWorker Part {part_num:02d} completed successfully with OmniVoice: {part_wav}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Voice Matrix Worker")
+    parser = argparse.ArgumentParser(description="OmniVoice Matrix Worker")
     parser.add_argument("--part", type=int, required=True, help="Part number (1-15)")
     parser.add_argument("--script", type=str, required=True, help="Path to combined_voiceover.txt")
     parser.add_argument("--output-dir", type=str, default="./audio_out", help="Output directory")

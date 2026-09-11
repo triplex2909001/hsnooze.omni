@@ -85,7 +85,7 @@ jobs:
           pattern: voiceover-part-*
           merge-multiple: true
 
-      - name: Audit Gatekeeper GK4 (STRICT: RMS >= 0.003, Peak >= 0.02)
+      - name: "Audit Gatekeeper GK4 (STRICT: RMS >= 0.003, Peak >= 0.02)"
         run: |
           python3 -c "
           import glob, os, sys

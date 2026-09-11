@@ -64,6 +64,12 @@ VOICE_MODES = [
     "Colab"    # Google Colab via colab-cli: T4/L4 GPU, sequential Part 1->15 with direct GDrive mount
 ]
 DEFAULT_VOICE_MODE = "GHA"
+# Voice Reference Configuration (Default Anchor Voice)
+MAINVOICE_FOLDER_ID = "1n3CkuRYJlmeWR2V_rn8w3UT14ECQlc2v"
+DEFAULT_VOICE_REF_ID = "1VC_eN0rnm9l2d4ilogn9B2GqWzzaV4fS"
+DEFAULT_VOICE_NAME = "Milo (Calm, Soothing & Meditative)"
+DEFAULT_VOICE_PATH = "mainvoice/voice_preview_milo.mp3"
+
 
 # Google Sheet Column Schema (A - N)
 COLUMNS = {

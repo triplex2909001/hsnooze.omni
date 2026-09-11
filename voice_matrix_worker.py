@@ -40,7 +40,9 @@ def run_matrix_worker(part_num: int, script_path: str, output_dir: str, voice_re
         full_text = f.read()
         
     # Split into parts
-    raw_parts = [p.strip() for p in full_text.split("\n\n\n") if p.strip()]
+    raw_parts = [p.strip() for p in full_text.split("\n\n=== PART BREAK ===\n\n") if p.strip()]
+    if len(raw_parts) < 15:
+        raw_parts = [p.strip() for p in full_text.split("\n\n\n") if p.strip()]
     if len(raw_parts) < 15:
         raw_parts = [p.strip() for p in full_text.split("## Part") if p.strip()]
         

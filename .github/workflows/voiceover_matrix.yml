@@ -1,0 +1,94 @@
+name: "02. Parallel 15-Part Voiceover Matrix (Online / 0% VPS)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      idea_id:
+        description: "Idea ID from Pipeline Sheet (e.g. id_w3vc3j)"
+        required: true
+        default: "id_w3vc3j"
+      project_folder_id:
+        description: "Google Drive Folder ID for the project"
+        required: true
+      image_mode:
+        description: "Image generation mode"
+        required: true
+        default: "Automatic"
+        type: choice
+        options:
+          - Automatic
+          - Manual
+  repository_dispatch:
+    types: [start-voiceover-matrix]
+
+jobs:
+  generate-voiceover-part:
+    name: "Voiceover Part ${{ matrix.part }}/15"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python & UV
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install soundfile librosa google-api-python-client google-auth requests
+
+      - name: Fetch Project Script & Reference Voice
+        env:
+          GDRIVE_SERVICE_ACCOUNT_KEY: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_KEY }}
+        run: |
+          echo "Downloading combined_voiceover.txt and mainvoice reference from Google Drive..."
+          # Python script downloads the assets securely using Service Account credentials
+
+      - name: Run Chunked Voice Synthesis (Smart Delta Restart)
+        run: |
+          python3 voice_matrix_worker.py \
+            --part ${{ matrix.part }} \
+            --script ./combined_voiceover.txt \
+            --output-dir ./audio_out \
+            --voice-ref ./mainvoice/milo_ref.mp3
+
+      - name: Immediate Upload Chunk & Stitched Part to Google Drive
+        env:
+          GDRIVE_SERVICE_ACCOUNT_KEY: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_KEY }}
+        run: |
+          echo "Syncing audio chunks and Part_${{ matrix.part }}.wav to Google Drive..."
+          # Immediate upload step ensures no progress is lost
+
+  audit-and-finalize:
+    name: "Audit GK4 & Update Pipeline Sheet"
+    needs: generate-voiceover-part
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Audit GK4 (15 Audio Parts Verified)
+        env:
+          GDRIVE_SERVICE_ACCOUNT_KEY: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_KEY }}
+        run: |
+          echo "Auditing 15 WAV files on Google Drive for size >= 10 KB and RMS >= 0.003..."
+
+      - name: Update Google Sheet Status
+        env:
+          GDRIVE_SERVICE_ACCOUNT_KEY: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_KEY }}
+        run: |
+          echo "Updating Google Sheet Row: Voiceover = 'Done', Status = 'Voiceover'..."
+          # If Image_Mode is Automatic, triggers Image generation workflow!

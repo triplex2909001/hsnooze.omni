@@ -20,9 +20,56 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 
 
+import re
+
+
+def clean_voiceover_script(text: str) -> str:
+    """
+    Gatekeeper Anti-Heading & Metadata Sanitizer for Voiceover TTS.
+    Strips out all headings (Markdown #, ACT, PART, BEAT), Google Doc anchor IDs (h.xxx),
+    technical bracket notes [SFX...], and word counts to prevent TTS from reading them aloud.
+    """
+    lines = text.splitlines()
+    cleaned_lines = []
+    
+    skip_line_patterns = [
+        r'^\s*#{1,6}\s+.*$',                               # Markdown headers: # Heading, ## Part 01
+        r'^\s*(?:ACT|Act)\s+[IVXLCDM0-9]+.*$',             # ACT I: ..., Act 1
+        r'^\s*(?:PART|Part)\s+[0-9]+.*$',                  # Part 01: ..., Part 1
+        r'^\s*(?:BEAT|Beat)\s+[0-9]+.*$',                  # Beat 01: ...
+        r'^\s*(?:SCENE|Scene)\s+[0-9]+.*$',                # Scene 01: ...
+        r'^\s*Word\s+[Cc]ount\s*[:=].*$',                  # Word count: 1100
+        r'^\s*\[.*\]\s*$',                                 # Standalone [Bracket notes]
+        r'^\s*\(.*Hook.*\)\s*$',                           # Standalone (Host Hook)
+        r'^\s*h\.[a-z0-9]+\s*$',                           # GDoc heading anchor IDs (e.g. h.ipicnrszs37x)
+        r'^\s*---\s*$',                                    # Horizontal rules
+    ]
+    compiled_skips = [re.compile(p, re.IGNORECASE) for p in skip_line_patterns]
+    
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            cleaned_lines.append('')
+            continue
+        
+        if any(p.match(stripped) for p in compiled_skips):
+            continue
+            
+        # Inline cleaning: remove technical brackets like [Music: ambient drone 80s]
+        cleaned_line = re.sub(r'\[(?:Music|SFX|Audio|Sound|Visual|Beat|Note|Scene)[^\]]*\]', '', line, flags=re.IGNORECASE)
+        # Remove standalone anchor tags if any
+        cleaned_line = re.sub(r'h\.[a-z0-9]{10,}', '', cleaned_line)
+        
+        if cleaned_line.strip():
+            cleaned_lines.append(cleaned_line.strip())
+            
+    result = "\n\n".join([p for p in "\n".join(cleaned_lines).split("\n\n") if p.strip()])
+    return result
+
 def split_into_paragraphs(text: str) -> List[str]:
     """Splits raw script text into paragraphs by double newlines."""
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    cleaned = clean_voiceover_script(text)
+    paragraphs = [p.strip() for p in cleaned.split("\n\n") if p.strip()]
     return paragraphs
 
 

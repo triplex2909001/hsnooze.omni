@@ -20,6 +20,10 @@ on:
         required: true
         default: "1taEWlfh_MgYA3pqWLItFWpuwMSNOoRHo"
 
+concurrency:
+  group: omnivoice-pipeline
+  cancel-in-progress: true
+
 jobs:
   # STAGE 1: Tải mô hình OmniVoice & Cài đặt dependencies trước
   setup-and-cache-model:
@@ -66,7 +70,7 @@ jobs:
     name: "02. OmniVoice Part ${{ matrix.part }}/15"
     needs: setup-and-cache-model
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 270
     strategy:
       fail-fast: false
       matrix:
@@ -112,7 +116,8 @@ jobs:
             --part ${{ matrix.part }} \
             --script ./combined_voiceover.txt \
             --output-dir ./audio_out \
-            --voice-ref ./mainvoice/voice_preview_milo.mp3
+            --voice-ref ./mainvoice/voice_preview_milo.mp3 \
+            --num-step 10
 
       - name: Upload Part ${{ matrix.part }} Audio Artifact
         uses: actions/upload-artifact@v4

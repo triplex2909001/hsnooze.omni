@@ -22,10 +22,10 @@ from voice_chunk_engine import (
 )
 
 
-def run_matrix_worker(part_num: int, script_path: str, output_dir: str, voice_ref: str = None):
+def run_matrix_worker(part_num: int, script_path: str, output_dir: str, voice_ref: str = None, num_step: int = 10):
     print(f"==================================================")
     print(f"GITHUB ACTIONS MATRIX WORKER - PART {part_num:02d}")
-    print(f"Engine: k2-fsa/OmniVoice (Zero-Shot Voice Cloning)")
+    print(f"Engine: k2-fsa/OmniVoice (Zero-Shot Voice Cloning, num_step={num_step})")
     print(f"==================================================")
     
     script_p = Path(script_path)
@@ -51,8 +51,8 @@ def run_matrix_worker(part_num: int, script_path: str, output_dir: str, voice_re
     device = "cuda:0" if ("CUDA_VISIBLE_DEVICES" in os.environ or os.environ.get("USE_GPU") == "1") else "cpu"
     tts_backend = OmniVoiceBackend(device=device)
     
-    # Initialize pipeline
-    pipeline = ChunkVoiceoverPipeline(tts_backend=tts_backend, output_dir=output_dir)
+    # Initialize pipeline with optimized num_step
+    pipeline = ChunkVoiceoverPipeline(tts_backend=tts_backend, output_dir=output_dir, num_step=num_step)
     part_wav = pipeline.process_part(part_num=part_num, part_text=part_text, voice_ref=voice_ref)
     
     print(f"\nWorker Part {part_num:02d} completed successfully with OmniVoice: {part_wav}")
@@ -64,6 +64,7 @@ if __name__ == "__main__":
     parser.add_argument("--script", type=str, required=True, help="Path to combined_voiceover.txt")
     parser.add_argument("--output-dir", type=str, default="./audio_out", help="Output directory")
     parser.add_argument("--voice-ref", type=str, default=None, help="Path to reference audio")
+    parser.add_argument("--num-step", type=int, default=10, help="Diffusion decoding steps (default: 10)")
     args = parser.parse_args()
     
-    run_matrix_worker(args.part, args.script, args.output_dir, args.voice_ref)
+    run_matrix_worker(args.part, args.script, args.output_dir, args.voice_ref, args.num_step)

@@ -219,6 +219,7 @@ class OmniVoiceBackend:
         self.model_id = model_id
         self.model = None
         self.sampling_rate = 24000
+        self.cached_prompts = {}
         self._load_model()
 
     def _load_model(self):
@@ -244,21 +245,31 @@ class OmniVoiceBackend:
         self.sampling_rate = getattr(self.model, "sampling_rate", 24000)
         print(f"[OmniVoice] Model loaded successfully! Native Sampling Rate: {self.sampling_rate} Hz")
 
-    def synthesize(self, text: str, output_path: str, voice_ref: Optional[str] = None, instruct: Optional[str] = None):
+    def get_or_create_clone_prompt(self, voice_ref: str):
+        """Pre-encodes VoiceClonePrompt once from reference audio to avoid re-running Whisper ASR on every chunk."""
+        if voice_ref not in self.cached_prompts:
+            print(f"[OmniVoice] Pre-encoding VoiceClonePrompt for: {voice_ref} (one-time initialization)...")
+            prompt = self.model.create_voice_clone_prompt(ref_audio=voice_ref)
+            self.cached_prompts[voice_ref] = prompt
+            print(f"[OmniVoice] VoiceClonePrompt created and cached successfully for all chunks!")
+        return self.cached_prompts[voice_ref]
+
+    def synthesize(self, text: str, output_path: str, voice_ref: Optional[str] = None, instruct: Optional[str] = None, num_step: int = 10):
         """
         Synthesizes speech using k2-fsa/OmniVoice zero-shot voice cloning.
-        Note: When voice_ref is provided, instruct must be None or follow strict OmniVoice vocab.
+        Uses cached VoiceClonePrompt (zero Whisper overhead per chunk) and optimized num_step.
         """
         import soundfile as sf
         import torch
 
         kwargs = {
             "text": text,
-            "language": "en"
+            "language": "en",
+            "num_step": num_step
         }
         if voice_ref and os.path.exists(voice_ref):
-            kwargs["ref_audio"] = voice_ref
-        if instruct:
+            kwargs["voice_clone_prompt"] = self.get_or_create_clone_prompt(voice_ref)
+        elif instruct:
             kwargs["instruct"] = instruct
 
         audio = self.model.generate(**kwargs)
@@ -279,13 +290,14 @@ class ChunkVoiceoverPipeline:
     Orchestrates chunk-level voiceover generation with Smart Delta Restart.
     Enforces k2-fsa/OmniVoice and strict Gatekeeper GK4 acoustic auditing.
     """
-    def __init__(self, tts_backend=None, output_dir: str = "./audio_output"):
+    def __init__(self, tts_backend=None, output_dir: str = "./audio_output", num_step: int = 10):
         if tts_backend is None:
             raise ValueError("[GK4 SECURITY VIOLATION] tts_backend cannot be None! A real k2-fsa/OmniVoice backend is required.")
         self.tts_backend = tts_backend
         self.output_dir = Path(output_dir)
         self.chunks_dir = self.output_dir / "chunks_raw"
         self.parts_dir = self.output_dir
+        self.num_step = num_step
         
         self.chunks_dir.mkdir(parents=True, exist_ok=True)
         self.parts_dir.mkdir(parents=True, exist_ok=True)
@@ -339,9 +351,9 @@ class ChunkVoiceoverPipeline:
                     print(f"  [DELTA REBUILD] Corrupt/silent chunk {item['filename']}: {msg}")
                     c_path.unlink(missing_ok=True)
             
-            # Synthesize chunk via k2-fsa/OmniVoice (instruct=None so it clones ref_audio purely)
-            print(f"  [OMNIVOICE SYNTHESIS] {item['filename']} ({len(c_text.split())} words): '{c_text[:40]}...'")
-            self.tts_backend.synthesize(text=c_text, output_path=str(c_path), voice_ref=voice_ref, instruct=None)
+            # Synthesize chunk via k2-fsa/OmniVoice (cached VoiceClonePrompt + num_step)
+            print(f"  [OMNIVOICE SYNTHESIS] {item['filename']} ({len(c_text.split())} words, num_step={self.num_step}): '{c_text[:40]}...'")
+            self.tts_backend.synthesize(text=c_text, output_path=str(c_path), voice_ref=voice_ref, instruct=None, num_step=self.num_step)
                 
             # Verify newly synthesized chunk with STRICT acoustic gate
             is_valid, msg = audit_wav_acoustic(str(c_path), min_size_kb=1, min_rms=0.003, min_peak=0.02)

@@ -51,8 +51,12 @@ def run_matrix_worker(part_num: int, script_path: str, output_dir: str, voice_re
     # Split into 15 parts cleanly using delimiters
     if "=== PART BREAK ===" in full_text:
         raw_parts = [p.strip() for p in full_text.split("=== PART BREAK ===") if p.strip()]
+    elif "\n### Part " in full_text:
+        raw_parts = [("### Part " + p).strip() for p in full_text.split("\n### Part ") if p.strip()]
     elif "\n## Part " in full_text:
         raw_parts = [("## Part " + p).strip() for p in full_text.split("\n## Part ") if p.strip()]
+    elif "\nPart " in full_text:
+        raw_parts = [("Part " + p).strip() for p in full_text.split("\nPart ") if p.strip()]
     else:
         raw_parts = [p.strip() for p in full_text.split("\n\n\n") if p.strip()]
         

@@ -105,7 +105,18 @@ jobs:
           mkdir -p ./mainvoice
           mkdir -p ./audio_out
           python3 -c "
-          import requests, sys, os
+          import requests, sys, os, io, zipfile, xml.etree.ElementTree as ET
+
+          def extract_docx_text(content_bytes):
+              with zipfile.ZipFile(io.BytesIO(content_bytes)) as z:
+                  xml_content = z.read('word/document.xml')
+                  tree = ET.fromstring(xml_content)
+                  paragraphs = []
+                  for p in tree.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p'):
+                      texts = [node.text for node in p.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t') if node.text]
+                      if texts:
+                          paragraphs.append(''.join(texts))
+                  return '\n\n'.join(paragraphs)
 
           def download_file(file_id, dest_path, is_text=False):
               session = requests.Session()
@@ -113,7 +124,7 @@ jobs:
                   doc_url = f'https://docs.google.com/document/d/{file_id}/export?format=txt'
                   try:
                       r = session.get(doc_url, timeout=30)
-                      if r.status_code == 200 and not r.text.strip().lower().startswith('<!doctype html'):
+                      if r.status_code == 200 and not r.text.strip().lower().startswith('<!doctype html') and not r.content.startswith(b'PK\x03\x04'):
                           with open(dest_path, 'wb') as f:
                               f.write(r.content)
                           print(f'Downloaded Google Doc {file_id} -> {dest_path} ({os.path.getsize(dest_path)} bytes)')
@@ -130,11 +141,18 @@ jobs:
               if r.status_code != 200:
                   print(f'ERROR: Failed to download {file_id}, HTTP status {r.status_code}')
                   sys.exit(1)
-              with open(dest_path, 'wb') as f:
-                  for chunk in r.iter_content(32768):
-                      if chunk:
-                          f.write(chunk)
-              print(f'Downloaded Drive file {file_id} -> {dest_path} ({os.path.getsize(dest_path)} bytes)')
+
+              content = r.content
+              if is_text and content.startswith(b'PK\x03\x04'):
+                  print('Detected DOCX file format. Unpacking XML text...')
+                  extracted_text = extract_docx_text(content)
+                  with open(dest_path, 'w', encoding='utf-8') as f:
+                      f.write(extracted_text)
+                  print(f'Unpacked DOCX into text: {dest_path} ({os.path.getsize(dest_path)} bytes)')
+              else:
+                  with open(dest_path, 'wb') as f:
+                      f.write(content)
+                  print(f'Downloaded Drive file {file_id} -> {dest_path} ({os.path.getsize(dest_path)} bytes)')
 
           print('Fetching combined_voiceover.txt...')
           download_file('${{ inputs.script_file_id }}', './combined_voiceover.txt', is_text=True)

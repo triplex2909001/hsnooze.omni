@@ -13,8 +13,15 @@ from pathlib import Path
 
 COLAB_CLI = os.path.expanduser("~/.local/bin/colab")
 SESSION = "hsnooze-voice"
-ATTACHMENTS_DIR = Path("/Users/hanario/.workspace-mcp/attachments")
-SCRATCH_DIR = Path("/Users/hanario/.gemini/antigravity/brain/088cad0e-2171-40da-9f7f-2ae086579b89/scratch/basho_production")
+ATTACHMENTS_DIR = Path(
+    os.getenv("HSNOOZE_ATTACHMENTS_DIR", str(Path.home() / ".workspace-mcp" / "attachments"))
+)
+SCRATCH_DIR = Path(
+    os.getenv(
+        "HSNOOZE_SCRATCH_DIR",
+        str(Path.home() / ".gemini/antigravity/brain/088cad0e-2171-40da-9f7f-2ae086579b89/scratch/basho_production")
+    )
+)
 
 def audit_wav_acoustic(filepath: str, min_size_kb: float = 50.0, min_rms: float = 0.003, min_peak: float = 0.02):
     path = Path(filepath)

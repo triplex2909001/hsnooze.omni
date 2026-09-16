@@ -104,11 +104,44 @@ jobs:
         run: |
           mkdir -p ./mainvoice
           mkdir -p ./audio_out
-          # Tải kịch bản từ Google Drive (không lưu cố định trong repo)
-          curl -sL "https://drive.google.com/uc?export=download&id=${{ inputs.script_file_id }}" -o ./combined_voiceover.txt
-          # Tải voice mẫu từ Google Drive
-          curl -sL "https://drive.google.com/uc?export=download&id=${{ inputs.voice_ref_id }}" -o ./mainvoice/voice_preview_milo.mp3
-          echo "Assets fetched from Google Drive successfully!"
+          python3 -c "
+          import requests, sys, os
+
+          def download_file(file_id, dest_path, is_text=False):
+              session = requests.Session()
+              if is_text:
+                  doc_url = f'https://docs.google.com/document/d/{file_id}/export?format=txt'
+                  try:
+                      r = session.get(doc_url, timeout=30)
+                      if r.status_code == 200 and not r.text.strip().lower().startswith('<!doctype html'):
+                          with open(dest_path, 'wb') as f:
+                              f.write(r.content)
+                          print(f'Downloaded Google Doc {file_id} -> {dest_path} ({os.path.getsize(dest_path)} bytes)')
+                          return
+                  except Exception as e:
+                      print(f'Docs export note: {e}')
+
+              url = 'https://docs.google.com/uc?export=download'
+              r = session.get(url, params={'id': file_id, 'confirm': 't'}, stream=True, timeout=60)
+              for k, v in r.cookies.items():
+                  if k.startswith('download_warning'):
+                      r = session.get(url, params={'id': file_id, 'confirm': v}, stream=True, timeout=60)
+                      break
+              if r.status_code != 200:
+                  print(f'ERROR: Failed to download {file_id}, HTTP status {r.status_code}')
+                  sys.exit(1)
+              with open(dest_path, 'wb') as f:
+                  for chunk in r.iter_content(32768):
+                      if chunk:
+                          f.write(chunk)
+              print(f'Downloaded Drive file {file_id} -> {dest_path} ({os.path.getsize(dest_path)} bytes)')
+
+          print('Fetching combined_voiceover.txt...')
+          download_file('${{ inputs.script_file_id }}', './combined_voiceover.txt', is_text=True)
+
+          print('Fetching voice_preview_milo.mp3...')
+          download_file('${{ inputs.voice_ref_id }}', './mainvoice/voice_preview_milo.mp3', is_text=False)
+          "
 
       - name: Run OmniVoice Synthesis with Milo Voice (Smart Delta Restart)
         run: |

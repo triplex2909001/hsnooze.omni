@@ -32,12 +32,27 @@ def run_matrix_worker(part_num: int, script_path: str, output_dir: str, voice_re
     if not script_p.exists():
         raise FileNotFoundError(f"Script file not found: {script_p}")
         
-    with open(script_p, "r", encoding="utf-8") as f:
-        full_text = f.read()
+    raw_bytes = script_p.read_bytes()
+    for enc in ["utf-8", "utf-8-sig", "latin-1", "cp1252"]:
+        try:
+            full_text = raw_bytes.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        full_text = raw_bytes.decode("utf-8", errors="replace")
+
+    if full_text.strip().lower().startswith("<!doctype html") or "<html" in full_text[:100].lower():
+        raise ValueError(
+            f"[GDRIVE DOWNLOAD ERROR] Script file {script_p} contains HTML content instead of plain text. "
+            "Please verify Google Drive file ID, sharing permissions, or export format."
+        )
         
-    # Split into 15 parts cleanly using delimiter
+    # Split into 15 parts cleanly using delimiters
     if "=== PART BREAK ===" in full_text:
         raw_parts = [p.strip() for p in full_text.split("=== PART BREAK ===") if p.strip()]
+    elif "\n## Part " in full_text:
+        raw_parts = [("## Part " + p).strip() for p in full_text.split("\n## Part ") if p.strip()]
     else:
         raw_parts = [p.strip() for p in full_text.split("\n\n\n") if p.strip()]
         

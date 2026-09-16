@@ -48,17 +48,21 @@ def run_matrix_worker(part_num: int, script_path: str, output_dir: str, voice_re
             "Please verify Google Drive file ID, sharing permissions, or export format."
         )
         
-    # Split into 15 parts cleanly using delimiters
+    # Split into 15 parts cleanly using delimiter or regex
     if "=== PART BREAK ===" in full_text:
         raw_parts = [p.strip() for p in full_text.split("=== PART BREAK ===") if p.strip()]
-    elif "\n### Part " in full_text:
-        raw_parts = [("### Part " + p).strip() for p in full_text.split("\n### Part ") if p.strip()]
-    elif "\n## Part " in full_text:
-        raw_parts = [("## Part " + p).strip() for p in full_text.split("\n## Part ") if p.strip()]
-    elif "\nPart " in full_text:
-        raw_parts = [("Part " + p).strip() for p in full_text.split("\nPart ") if p.strip()]
     else:
-        raw_parts = [p.strip() for p in full_text.split("\n\n\n") if p.strip()]
+        import re
+        pattern = r"(?i)(?:^|\n+)(?:#{1,4}\s*)?Part\s*(\d{1,2})\b"
+        matches = list(re.finditer(pattern, full_text))
+        if len(matches) >= 15:
+            raw_parts = []
+            for i in range(len(matches)):
+                start = matches[i].start()
+                end = matches[i+1].start() if i + 1 < len(matches) else len(full_text)
+                raw_parts.append(full_text[start:end].strip())
+        else:
+            raw_parts = [p.strip() for p in full_text.split("\n\n\n") if p.strip()]
         
     part_idx = part_num - 1
     if part_idx >= len(raw_parts):

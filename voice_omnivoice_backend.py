@@ -52,10 +52,16 @@ class OmniVoiceBackend:
             print(f"[OmniVoice] VoiceClonePrompt created and cached successfully!")
         return self.cached_prompts[voice_ref]
 
-    def synthesize(self, text: str, output_path: str, voice_ref: Optional[str] = None, instruct: Optional[str] = None, num_step: int = 10):
+    def synthesize(self, text: str, output_path: str, voice_ref: Optional[str] = None, instruct: Optional[str] = None, num_step: int = 10, seed: Optional[int] = None):
         """Synthesizes speech using k2-fsa/OmniVoice zero-shot voice cloning."""
         import soundfile as sf
         import torch
+
+        # Lock randomness for voice consistency across chunks/parts (fix 2026-10-10)
+        if seed is not None:
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
 
         kwargs = {"text": text, "language": "en", "num_step": num_step}
         if voice_ref and os.path.exists(voice_ref):

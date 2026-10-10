@@ -19,7 +19,7 @@ from voice_acoustic_auditor import audit_wav_acoustic, stitch_wav_chunks
 class ChunkVoiceoverPipeline:
     """Orchestrates chunk-level voiceover generation with Smart Delta Restart and GK4 validation."""
 
-    def __init__(self, tts_backend=None, output_dir: str = "./audio_output", num_step: int = 10):
+    def __init__(self, tts_backend=None, output_dir: str = "./audio_output", num_step: int = 10, seed: Optional[int] = None):
         if tts_backend is None:
             raise ValueError("[GK4 SECURITY VIOLATION] tts_backend cannot be None! A real k2-fsa/OmniVoice backend is required.")
         self.tts_backend = tts_backend
@@ -27,6 +27,7 @@ class ChunkVoiceoverPipeline:
         self.chunks_dir = self.output_dir / "chunks_raw"
         self.parts_dir = self.output_dir
         self.num_step = num_step
+        self.seed = seed  # Fixed seed for voice consistency (fix 2026-10-10)
 
         self.chunks_dir.mkdir(parents=True, exist_ok=True)
         self.parts_dir.mkdir(parents=True, exist_ok=True)
@@ -60,7 +61,7 @@ class ChunkVoiceoverPipeline:
             c_path.unlink(missing_ok=True)
 
         print(f"  [OMNIVOICE SYNTHESIS] {item['filename']} ({len(c_text.split())} words): '{c_text[:40]}...'")
-        self.tts_backend.synthesize(text=c_text, output_path=str(c_path), voice_ref=voice_ref, instruct=None, num_step=self.num_step)
+        self.tts_backend.synthesize(text=c_text, output_path=str(c_path), voice_ref=voice_ref, instruct=None, num_step=self.num_step, seed=self.seed)
         is_valid, msg = audit_wav_acoustic(str(c_path), min_size_kb=1, min_rms=0.003, min_peak=0.02)
         if not is_valid:
             raise RuntimeError(f"Failed GK4 audit for synthesized chunk {item['filename']}: {msg}")

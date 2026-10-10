@@ -19,6 +19,10 @@ on:
         description: "Google Drive Folder ID for the project"
         required: true
         default: "1taEWlfh_MgYA3pqWLItFWpuwMSNOoRHo"
+      voice_seed:
+        description: "Fixed random seed for voice consistency (e.g. 42). Empty = random (legacy behavior)."
+        required: false
+        default: "42"
 
 concurrency:
   group: omnivoice-pipeline
@@ -168,7 +172,8 @@ jobs:
             --script ./combined_voiceover.txt \
             --output-dir ./audio_out \
             --voice-ref ./mainvoice/voice_preview_milo.mp3 \
-            --num-step 10
+            --num-step 10 \
+            --seed ${{ inputs.voice_seed }}
 
       - name: Upload Part ${{ matrix.part }} Audio Artifact
         uses: actions/upload-artifact@v4

@@ -12,9 +12,9 @@ on:
         required: true
         default: "1wrcmW13YLqEwBXHA5Amd3gEjA-fbPVV1"
       voice_ref_id:
-        description: "Google Drive File ID for reference voice (e.g. Milo)"
+        description: "Google Drive File ID for reference voice (MILO - History Snooze)"
         required: true
-        default: "1VC_eN0rnm9l2d4ilogn9B2GqWzzaV4fS"
+        default: "19KqmrYi70h55cm-v2WYpx0RgQWma86LO"
       project_folder_id:
         description: "Google Drive Folder ID for the project"
         required: true

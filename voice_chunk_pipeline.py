@@ -4,6 +4,7 @@ Enforces k2-fsa/OmniVoice and strict Gatekeeper GK4 acoustic auditing.
 Adheres to Documents/Structure/01_ARCHITECTURE_CONSTRAINED_AI.md (Rule <= 150 lines/file).
 """
 
+import hashlib
 import sys
 from pathlib import Path
 from typing import Optional
@@ -32,6 +33,29 @@ class ChunkVoiceoverPipeline:
         self.chunks_dir.mkdir(parents=True, exist_ok=True)
         self.parts_dir.mkdir(parents=True, exist_ok=True)
 
+    @staticmethod
+    def _text_hash(text: str) -> str:
+        """SHA256 of the exact text a wav file must have been synthesized from."""
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _sidecar_path(wav_path: Path) -> Path:
+        """Sidecar file storing the text hash, e.g. part_01_chunk_001.wav.sha."""
+        return wav_path.with_name(wav_path.name + ".sha")
+
+    def _sidecar_matches(self, wav_path: Path, text: str) -> bool:
+        """True only if the sidecar exists and its hash matches the current text."""
+        sha_path = self._sidecar_path(wav_path)
+        if not sha_path.exists():
+            return False
+        try:
+            return sha_path.read_text(encoding="utf-8").strip() == self._text_hash(text)
+        except OSError:
+            return False
+
+    def _write_sidecar(self, wav_path: Path, text: str) -> None:
+        self._sidecar_path(wav_path).write_text(self._text_hash(text), encoding="utf-8")
+
     def _split_chunks_info(self, part_num: int, part_text: str):
         paragraphs = split_into_paragraphs(part_text)
         all_chunks = []
@@ -53,30 +77,42 @@ class ChunkVoiceoverPipeline:
     def _process_chunk_delta(self, item: dict, voice_ref: Optional[str]) -> str:
         c_path = item["path"]
         c_text = item["text"]
-        if c_path.exists():
+        # Fix 2026-10-11: never reuse a chunk whose audio was synthesized from
+        # different text (Smart Delta Restart duplicate bug). Reuse only when the
+        # sidecar text-hash matches AND the wav passes the acoustic audit.
+        if c_path.exists() and self._sidecar_matches(c_path, c_text):
             is_valid, msg = audit_wav_acoustic(str(c_path), min_size_kb=5, min_rms=0.003, min_peak=0.02)
             if is_valid:
                 return str(c_path)
             print(f"  [DELTA REBUILD] Corrupt/silent chunk {item['filename']}: {msg}")
-            c_path.unlink(missing_ok=True)
+        elif c_path.exists():
+            print(f"  [DELTA REBUILD] Text changed for {item['filename']}: stale audio discarded.")
+        c_path.unlink(missing_ok=True)
+        self._sidecar_path(c_path).unlink(missing_ok=True)
 
         print(f"  [OMNIVOICE SYNTHESIS] {item['filename']} ({len(c_text.split())} words): '{c_text[:40]}...'")
         self.tts_backend.synthesize(text=c_text, output_path=str(c_path), voice_ref=voice_ref, instruct=None, num_step=self.num_step, seed=self.seed)
         is_valid, msg = audit_wav_acoustic(str(c_path), min_size_kb=1, min_rms=0.003, min_peak=0.02)
         if not is_valid:
             raise RuntimeError(f"Failed GK4 audit for synthesized chunk {item['filename']}: {msg}")
+        self._write_sidecar(c_path, c_text)
         return str(c_path)
 
     def process_part(self, part_num: int, part_text: str, voice_ref: Optional[str] = None) -> str:
         final_part_path = self.parts_dir / f"Part_{part_num:02d}.wav"
 
-        # 1. Smart Delta Top-Level Check
-        if final_part_path.exists():
+        # 1. Smart Delta Top-Level Check (fix 2026-10-11: also verify text hash,
+        # so a Part wav stitched from different text is never silently reused)
+        if final_part_path.exists() and self._sidecar_matches(final_part_path, part_text):
             is_valid, msg = audit_wav_acoustic(str(final_part_path), min_size_kb=50, min_rms=0.003, min_peak=0.02)
             if is_valid:
                 print(f"[SMART DELTA SKIP] Part_{part_num:02d}.wav already complete & valid: {msg}")
                 return str(final_part_path)
             print(f"[REDO] Part_{part_num:02d}.wav failed GK4: {msg}. Re-synthesizing...")
+        elif final_part_path.exists():
+            print(f"[REDO] Part_{part_num:02d}.wav text changed: stale audio discarded.")
+            final_part_path.unlink(missing_ok=True)
+            self._sidecar_path(final_part_path).unlink(missing_ok=True)
 
         # 2. Split part into sentence chunks
         chunks_info = self._split_chunks_info(part_num, part_text)
@@ -93,6 +129,7 @@ class ChunkVoiceoverPipeline:
         is_valid, msg = audit_wav_acoustic(str(final_part_path), min_size_kb=10, min_rms=0.003, min_peak=0.02)
         if not is_valid:
             raise RuntimeError(f"Stitched Part_{part_num:02d}.wav failed GK4 acoustic audit: {msg}")
+        self._write_sidecar(final_part_path, part_text)
 
         print(f"[COMPLETED] Part_{part_num:02d}.wav verified GK4: {msg}")
         return str(final_part_path)

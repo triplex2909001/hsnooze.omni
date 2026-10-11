@@ -23,6 +23,10 @@ on:
         description: "Fixed random seed for voice consistency (e.g. 42). Empty = random (legacy behavior)."
         required: false
         default: "42"
+      num_step:
+        description: "Diffusion decoding steps for OmniVoice (default 10; higher = cleaner, slower)."
+        required: false
+        default: "10"
 
 concurrency:
   group: omnivoice-pipeline
@@ -172,7 +176,7 @@ jobs:
             --script ./combined_voiceover.txt \
             --output-dir ./audio_out \
             --voice-ref ./mainvoice/voice_preview_milo.mp3 \
-            --num-step 10 \
+            --num-step ${{ inputs.num_step }} \
             --seed ${{ inputs.voice_seed }}
 
       - name: Upload Part ${{ matrix.part }} Audio Artifact
